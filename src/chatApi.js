@@ -38,7 +38,7 @@ export async function requestAssistantReply({ message, history, sessionId }) {
     });
   } catch {
     throw new Error(
-      "Das Backend ist nicht erreichbar. Starte zuerst main.py auf http://127.0.0.1:8000 und prüfe danach den Chat erneut.",
+      "Das Backend ist nicht erreichbar. Bitte versuche es später erneut.",
     );
   }
 
