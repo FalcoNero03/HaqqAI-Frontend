@@ -1,7 +1,7 @@
 const DEFAULT_API_PATH = "/api/chat";
 
 function getApiEndpoint() {
-  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "https://mein-backend-47471766233.europe-west1.run.app";
 
   if (!configuredBaseUrl) {
     return DEFAULT_API_PATH;
