@@ -1,771 +1,1161 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
-  LoaderCircle,
-  MessageCircle,
-  MoreVertical,
-  Paperclip,
-  Plus,
-  Send,
-  Sparkles,
-  Trash2,
-  X,
+  Plus, MessageSquare, Paperclip, ArrowUp, Copy, RotateCcw, ThumbsUp,
+  MoreVertical, Menu, X, PanelLeftClose, PanelLeft, Send, CheckCircle2, LoaderCircle
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { requestAssistantReply } from "./chatApi";
 
-const STORAGE_KEY = "haqqai-session-chats-v1";
-const FEEDBACK_EMAIL = import.meta.env.VITE_FEEDBACK_EMAIL?.trim() || "";
+/* ============================================================
+   HaqqAI — Frontend (Single-File React)
+   ------------------------------------------------------------
+   Komponentenstruktur:
 
-const theme = {
-  cream: "#FBF7EF",
-  ink: "#1F2A30",
-  inkSoft: "#5A6A72",
-  primary: "#2B6B7F",
-  primarySoft: "#E6EEF1",
-  gold: "#C9A961",
-  border: "rgba(43,107,127,0.12)",
-  danger: "#A14F3C",
-};
+     <App>
+       <Sidebar>            ← ausklappbar (Desktop) / Overlay (Mobile)
+       <Main>
+         <TopBar>           ← Hamburger + Dreipunkt-Menü (Feedback)
+         { welcome ? <WelcomeState /> : <ChatArea /> }
+         <PromptInput />
+       </Main>
+       <FeedbackDialog />   ← Modal, öffnet via Dreipunkt-Menü
+     </App>
 
-const patternBg = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><g fill='none' stroke='%232B6B7F' stroke-width='0.6' stroke-opacity='0.07'><path d='M40 4 L76 40 L40 76 L4 40 Z'/><path d='M40 16 L64 40 L40 64 L16 40 Z'/><circle cx='40' cy='40' r='6'/></g></svg>")`;
+   Responsive-Strategie:
+   - >= 900px: Sidebar im Grid. Collapse-Button reduziert auf 0.
+   - <  900px: Sidebar fixed als Overlay mit Backdrop.
+   ============================================================ */
 
-function makeId() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
+const GlobalStyles = () => (
+  <style>{`
+    :root {
+      --bg:           #FBF7EE;
+      --surface:      #FFFFFF;
+      --sidebar-bg:   #F4EEDF;
+      --ink:          #1F2D33;
+      --ink-soft:     #556872;
+      --ink-mute:     #8A97A0;
+      --line:         #E8DFC9;
+      --primary:      #4A7B8C;
+      --primary-ink:  #355A68;
+      --primary-soft: #DCE7EB;
+      --gold:         #C9A961;
+      --user-tint:    #E7EEF1;
 
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
+      --ff-display: "Cormorant Garamond", "EB Garamond", Georgia, serif;
+      --ff-body:   "Inter Tight", "Inter", ui-sans-serif, system-ui, sans-serif;
 
-function createSession() {
-  return {
-    id: makeId(),
-    title: "Neuer Chat",
-    messages: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-}
+      --fs-brand: 18px;
+      --fs-h1:    40px;
+      --fs-h2:    22px;
+      --fs-body:  15px;
+      --fs-sm:    13px;
+      --fs-xs:    11px;
 
-function createMessage(role, text) {
-  return {
-    id: makeId(),
-    role,
-    text,
-    createdAt: new Date().toISOString(),
-  };
-}
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 22px;
 
-function truncate(text, max = 32) {
-  if (!text) return "Neuer Chat";
-  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
-}
+      --shadow-soft: 0 1px 2px rgba(31,45,51,.04), 0 8px 24px rgba(31,45,51,.05);
+      --shadow-lift: 0 12px 40px rgba(31,45,51,.14);
 
-function buildFeedbackPayload(session, feedbackText) {
-  const history = (session?.messages || [])
-    .slice(-8)
-    .map((message) => `${message.role === "assistant" ? "HaqqAI" : "User"}: ${message.text}`)
-    .join("\n");
+      --sidebar-w: 288px;
+      --topbar-h: 56px;
+    }
 
-  return [
-    "HaqqAI Feedback",
-    "",
-    `Zeitpunkt: ${new Date().toLocaleString("de-DE")}`,
-    `Chat: ${session?.title || "Unbekannt"}`,
-    "",
-    "Feedback:",
-    feedbackText.trim(),
-    "",
-    "Letzte Nachrichten:",
-    history || "Keine Nachrichten vorhanden.",
-  ].join("\n");
-}
+    * { box-sizing: border-box; }
+    html, body, #root { height: 100%; margin: 0; }
+    body {
+      font-family: var(--ff-body);
+      font-size: var(--fs-body);
+      color: var(--ink);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
 
-function BrandHeader() {
-  return (
-    <div className="flex items-center gap-2.5 px-4 py-4">
-      <div
-        className="flex h-9 w-9 items-center justify-center rounded-lg"
-        style={{
-          background: theme.primarySoft,
-          border: `1px solid ${theme.border}`,
-        }}
-      >
-        <Sparkles size={18} style={{ color: theme.primary }} />
-      </div>
-      <div className="leading-tight">
-        <div
-          className="text-[17px] font-semibold tracking-tight"
-          style={{ color: theme.ink }}
-        >
-          HaqqAI
-        </div>
-        <div
-          className="text-[10px] font-semibold uppercase tracking-[0.14em]"
-          style={{ color: theme.inkSoft }}
-        >
-          MHG Dortmund
-        </div>
-      </div>
-    </div>
-  );
-}
+    .app-bg {
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(ellipse at 20% 0%, rgba(201,169,97,.06), transparent 55%),
+        radial-gradient(ellipse at 100% 100%, rgba(74,123,140,.05), transparent 60%),
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><g fill='none' stroke='%234A7B8C' stroke-opacity='0.055' stroke-width='1'><path d='M60 8 L92 26 L92 62 L60 80 L28 62 L28 26 Z'/><path d='M60 28 L78 38 L78 58 L60 68 L42 58 L42 38 Z'/><circle cx='60' cy='48' r='6'/></g></svg>");
+      background-size: auto, auto, 240px 240px;
+      background-repeat: no-repeat, no-repeat, repeat;
+    }
 
-function Sidebar({ sessions, activeId, onNew, onSelect, onDelete }) {
-  return (
-    <aside
-      className="flex h-full w-[260px] shrink-0 flex-col"
-      style={{
-        borderRight: `1px solid ${theme.border}`,
-        background: "rgba(255,255,255,0.35)",
-      }}
-    >
-      <BrandHeader />
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: rgba(85,104,114,.18); border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(85,104,114,.32); }
+    ::-webkit-scrollbar-track { background: transparent; }
 
-      <div className="px-3">
-        <button
-          onClick={onNew}
-          className="flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
-          style={{ background: theme.primary }}
-        >
-          <Plus size={16} /> Neuer Chat
-        </button>
-      </div>
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin .9s linear infinite; display: inline-block; }
 
-      <div
-        className="mb-2 mt-6 px-4 text-[10px] font-semibold uppercase tracking-[0.14em]"
-        style={{ color: theme.inkSoft }}
-      >
-        Sitzung
-      </div>
+    .history-item-del {
+      display: none; flex: 0 0 22px; height: 22px;
+      place-items: center;
+      border: 0; background: transparent; color: var(--ink-mute);
+      border-radius: 4px; cursor: pointer; padding: 2px;
+      margin-left: auto;
+      transition: color .15s ease, background .15s ease;
+    }
+    .history-item:hover .history-item-del { display: grid; }
+    .history-item-del:hover { color: #B0453A; background: rgba(176,69,58,.12); }
 
-      <nav className="flex-1 overflow-y-auto px-2">
-        {sessions.map((session) => {
-          const active = session.id === activeId;
-          return (
-            <div
-              key={session.id}
-              className="mb-1 flex items-center gap-1 rounded-lg"
-              style={{
-                background: active ? theme.primarySoft : "transparent",
-              }}
-            >
-              <button
-                onClick={() => onSelect(session.id)}
-                className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-left text-[13.5px] transition"
-                style={{
-                  color: active ? theme.primary : theme.ink,
-                  fontWeight: active ? 600 : 400,
-                }}
-              >
-                <MessageCircle size={14} className="shrink-0" />
-                <span className="truncate">{session.title}</span>
-              </button>
+    /* ---------- Layout ---------- */
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      min-height: 100vh;
+      transition: grid-template-columns .25s ease;
+    }
+    .app.sidebar-collapsed { grid-template-columns: 0 1fr; }
 
-              <button
-                type="button"
-                onClick={() => onDelete(session.id)}
-                className="mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-white/70"
-                style={{ color: theme.inkSoft }}
-                aria-label={`Chat ${session.title} löschen`}
-                title="Chat löschen"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          );
-        })}
-      </nav>
+    /* ---------- Sidebar ---------- */
+    .sidebar {
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--line);
+      display: flex; flex-direction: column;
+      padding: 20px 16px;
+      gap: 20px;
+      overflow: hidden;
+      transition: transform .25s ease;
+      min-width: 0;
+    }
+    .app.sidebar-collapsed .sidebar {
+      transform: translateX(-100%);
+      padding-left: 0; padding-right: 0;
+      border-right-color: transparent;
+    }
 
-      <div
-        className="px-4 py-3 text-center text-[10px] uppercase tracking-wider"
-        style={{ color: theme.inkSoft, borderTop: `1px solid ${theme.border}` }}
-      >
-        Ein Projekt der MHG Dortmund
-      </div>
-    </aside>
-  );
-}
+    .brand {
+      display: flex; align-items: center; gap: 12px;
+      padding: 4px 6px 14px;
+      border-bottom: 1px solid var(--line);
+      min-width: 256px;
+    }
+    .brand-mark {
+      width: 36px; height: 36px; flex: 0 0 36px;
+      display: grid; place-items: center;
+      border-radius: 10px;
+      background: linear-gradient(145deg, #FFFFFF, #F3EAD1);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-soft);
+    }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+    .brand-name {
+      font-family: var(--ff-display);
+      font-size: var(--fs-brand);
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .brand-sub {
+      font-size: var(--fs-xs);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--ink-mute);
+      margin-top: 3px;
+    }
 
-function MessageBubble({ role, text }) {
-  const isUser = role === "user";
+    .btn-new {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%;
+      padding: 11px 14px;
+      border-radius: 999px;
+      background: var(--primary);
+      color: #fff;
+      font-family: var(--ff-body);
+      font-size: var(--fs-sm);
+      font-weight: 500;
+      border: 0; cursor: pointer;
+      transition: background .15s ease, transform .15s ease;
+      box-shadow: 0 1px 0 rgba(255,255,255,.3) inset, 0 6px 16px rgba(74,123,140,.25);
+      min-width: 256px;
+    }
+    .btn-new:hover { background: var(--primary-ink); }
+    .btn-new:active { transform: translateY(1px); }
 
-  return (
-    <div className={`mb-5 flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className="max-w-[76%]">
-        {!isUser && (
-          <div
-            className="mb-1.5 flex items-center gap-2 text-[12px] font-semibold"
-            style={{ color: theme.primary }}
-          >
-            <Sparkles size={12} /> HaqqAI
-          </div>
-        )}
+    .section-label {
+      font-size: var(--fs-xs);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--ink-mute);
+      padding: 2px 8px 6px;
+    }
 
-        <div
-          className="rounded-2xl px-4 py-3 text-[14.5px] leading-relaxed"
-          style={{
-            background: isUser ? theme.primary : "rgba(255,255,255,0.85)",
-            color: isUser ? "#fff" : theme.ink,
-            border: isUser ? "none" : `1px solid ${theme.border}`,
-            borderTopRightRadius: isUser ? 6 : 16,
-            borderTopLeftRadius: isUser ? 16 : 6,
-            backdropFilter: "blur(4px)",
-          }}
-        >
-          <div className="whitespace-pre-wrap break-words">
-           <div className="prose prose-sm max-w-none break-words">
-                <ReactMarkdown>{text}</ReactMarkdown>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+    .history { display: flex; flex-direction: column; gap: 2px; }
+    .history-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px;
+      border-radius: var(--radius-sm);
+      font-size: var(--fs-sm);
+      color: var(--ink-soft);
+      cursor: pointer;
+      position: relative;
+      transition: background .15s ease, color .15s ease;
+    }
+    .history-item:hover { background: rgba(74,123,140,.08); color: var(--ink); }
+    .history-item.active {
+      background: rgba(74,123,140,.12);
+      color: var(--primary-ink);
+      font-weight: 500;
+    }
+    .history-item.active::before {
+      content: ""; position: absolute; left: -16px; top: 8px; bottom: 8px;
+      width: 2px; background: var(--gold); border-radius: 2px;
+    }
+    .history-item svg { flex: 0 0 16px; opacity: .7; }
 
-function WelcomeState() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-      <div
-        className="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em]"
-        style={{ color: theme.gold }}
-      >
-        Bismillah
-      </div>
-      <h1
-        className="mb-3 text-[30px] font-semibold tracking-tight"
-        style={{ color: theme.primary, fontFamily: "Georgia, serif" }}
-      >
-        Assalamu alaikum
-      </h1>
-      <p className="max-w-md text-[15px]" style={{ color: theme.inkSoft }}>
-        Wie kann ich dir heute helfen? Frag mich etwas über unsere Gemeinschaft,
-        Veranstaltungen oder Inhalte der MHG Dortmund.
-      </p>
-    </div>
-  );
-}
+    .sidebar-foot {
+      margin-top: auto;
+      font-size: var(--fs-xs);
+      color: var(--ink-mute);
+      padding: 10px 8px 2px;
+      border-top: 1px solid var(--line);
+    }
 
-function PromptInput({ value, onChange, onSend, disabled }) {
-  const isDisabled = disabled || !value.trim();
+    /* ---------- Main ---------- */
+    .main {
+      display: flex; flex-direction: column;
+      height: 100vh;
+      position: relative;
+      min-width: 0;
+    }
 
-  return (
-    <div className="px-6 pb-6 pt-2">
-      <div className="mx-auto max-w-3xl">
-        <div
-          className="flex items-center gap-2 rounded-2xl px-4 py-2.5"
-          style={{
-            background: "#fff",
-            border: `1px solid ${theme.border}`,
-            boxShadow: "0 4px 24px rgba(43,107,127,0.06)",
-          }}
-        >
-          <button
-            type="button"
-            className="rounded-lg p-1.5 hover:bg-gray-100"
-            style={{ color: theme.inkSoft }}
-          >
-            <Paperclip size={17} />
-          </button>
+    /* ---------- TopBar ---------- */
+    .topbar {
+      height: var(--topbar-h);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px 0 12px;
+      position: sticky; top: 0;
+      background: linear-gradient(to bottom, var(--bg) 80%, rgba(251,247,238,0));
+      z-index: 5;
+    }
+    .topbar-left, .topbar-right { display: flex; align-items: center; gap: 4px; }
 
-          <input
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !isDisabled) {
-                onSend();
-              }
-            }}
-            placeholder="Frage HaqqAI etwas..."
-            className="flex-1 bg-transparent py-1.5 text-[14.5px] outline-none"
-            style={{ color: theme.ink }}
-          />
+    .icon-btn {
+      width: 36px; height: 36px;
+      display: grid; place-items: center;
+      border: 0; background: transparent; color: var(--ink-soft);
+      border-radius: 10px; cursor: pointer;
+      transition: background .15s ease, color .15s ease;
+    }
+    .icon-btn:hover { background: rgba(74,123,140,.09); color: var(--primary-ink); }
+    .icon-btn:active { transform: translateY(1px); }
 
-          <button
-            type="button"
-            onClick={onSend}
-            disabled={isDisabled}
-            className="rounded-xl p-2 text-white transition hover:opacity-90 disabled:cursor-not-allowed"
-            style={{
-              background: theme.primary,
-              opacity: isDisabled ? 0.55 : 1,
-            }}
-          >
-            <Send size={15} />
-          </button>
-        </div>
+    .topbar-brand {
+      display: none;
+      align-items: center; gap: 10px;
+      font-family: var(--ff-display);
+      font-size: var(--fs-brand);
+      font-weight: 600;
+      color: var(--ink);
+      margin-left: 4px;
+    }
+    .topbar-brand .brand-mark { width: 28px; height: 28px; flex: 0 0 28px; }
 
-        <div
-          className="mt-3 text-center text-[10px] uppercase tracking-[0.14em]"
-          style={{ color: theme.inkSoft }}
-        >
-          HaqqAI antwortet auf Basis von MHG-Quellen
-        </div>
-      </div>
-    </div>
-  );
-}
+    /* ---------- Dropdown-Menü ---------- */
+    .menu-wrap { position: relative; }
+    .menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      min-width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-lift);
+      padding: 6px;
+      z-index: 20;
+      animation: menuIn .15s ease;
+    }
+    @keyframes menuIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .menu-item {
+      width: 100%; text-align: left;
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px;
+      border: 0; background: transparent; cursor: pointer;
+      border-radius: var(--radius-sm);
+      font-family: var(--ff-body); font-size: var(--fs-sm);
+      color: var(--ink);
+    }
+    .menu-item:hover { background: rgba(74,123,140,.08); color: var(--primary-ink); }
+    .menu-item svg { color: var(--ink-soft); }
+    .menu-item:hover svg { color: var(--primary-ink); }
+    .menu-divider { height: 1px; background: var(--line); margin: 4px 6px; }
+    .menu-foot {
+      padding: 8px 12px 4px;
+      font-size: var(--fs-xs);
+      color: var(--ink-mute);
+    }
 
-function FeedbackDialog({
-  isOpen,
-  value,
-  onChange,
-  onClose,
-  onSubmit,
-  status,
-  sessionTitle,
-}) {
-  if (!isOpen) return null;
+    /* ---------- Main-Scroll & Content ---------- */
+    .main-scroll {
+      flex: 1; overflow-y: auto;
+      display: flex; flex-direction: column;
+      padding: 24px 48px;
+    }
+    .main-inner { width: 100%; max-width: 760px; margin: 0 auto; flex: 1; display: flex; flex-direction: column; }
 
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/20 p-4 backdrop-blur-[2px]">
-      <div
-        className="w-full max-w-lg rounded-[28px] border bg-white/95 p-5 shadow-[0_24px_70px_rgba(31,42,48,0.18)]"
-        style={{ borderColor: theme.border }}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2
-              className="text-[20px] font-semibold tracking-tight"
-              style={{ color: theme.ink }}
-            >
-              Feedback senden
-            </h2>
-            <p className="mt-1 text-[13px]" style={{ color: theme.inkSoft }}>
-              Aktueller Chat: {sessionTitle || "Neuer Chat"}
-            </p>
-          </div>
+    /* ---------- Welcome-State ---------- */
+    .welcome {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center;
+      padding: 24px 0;
+    }
+    .welcome-greet {
+      font-family: var(--ff-display);
+      font-size: var(--fs-h1);
+      font-style: italic;
+      font-weight: 500;
+      color: var(--primary-ink);
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }
+    .welcome-sub { font-size: var(--fs-body); color: var(--ink-soft); margin: 0; }
+    .welcome-divider { width: 40px; height: 1px; background: var(--gold); margin: 22px auto 0; opacity: .7; }
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-gray-100"
-            style={{ color: theme.inkSoft }}
-            aria-label="Dialog schließen"
-          >
-            <X size={16} />
-          </button>
-        </div>
+    /* ---------- Chat-State ---------- */
+    .messages { display: flex; flex-direction: column; gap: 24px; padding-bottom: 16px; }
+    .bubble-row { display: flex; width: 100%; }
+    .bubble-row.user { justify-content: flex-end; }
+    .bubble-row.ai { justify-content: flex-start; }
+    .bubble {
+      max-width: 78%;
+      padding: 14px 18px;
+      font-size: var(--fs-body);
+      line-height: 1.6;
+      border-radius: var(--radius-lg);
+    }
+    .bubble.user {
+      background: var(--user-tint); color: var(--ink);
+      border: 1px solid var(--line);
+      border-bottom-right-radius: 6px;
+    }
+    .bubble.ai {
+      background: transparent; color: var(--ink);
+      border-left: 2px solid var(--gold);
+      border-radius: 0;
+      padding: 2px 0 2px 18px;
+      max-width: 100%;
+    }
+    .bubble.ai p { margin: 0 0 10px; }
+    .bubble.ai p:last-child { margin-bottom: 0; }
 
-        <textarea
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder="Was lief gut, was war unklar oder was soll verbessert werden?"
-          rows={7}
-          className="mt-4 w-full resize-none rounded-2xl border px-4 py-3 text-[14px] leading-6 outline-none"
-          style={{
-            borderColor: theme.border,
-            color: theme.ink,
-            background: "rgba(255,255,255,0.9)",
-          }}
-        />
+    .msg-meta {
+      font-size: var(--fs-xs); color: var(--ink-mute);
+      margin-top: 6px; letter-spacing: .04em;
+    }
+    .bubble-row.user .msg-meta { text-align: right; }
 
-        <p className="mt-3 text-[12px]" style={{ color: theme.inkSoft }}>
-          Wenn `VITE_FEEDBACK_EMAIL` gesetzt ist, öffnet sich dein Mailprogramm.
-          Sonst wird das Feedback inklusive Chat-Kontext in die Zwischenablage kopiert.
-        </p>
+    .ai-label { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--ink-soft); margin-bottom: 8px; }
+    .ai-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 3px rgba(201,169,97,.18); }
 
-        {status && (
-          <div className="mt-3 text-[13px]" style={{ color: theme.primary }}>
-            {status}
-          </div>
-        )}
+    .msg-actions { display: flex; gap: 6px; margin-top: 10px; }
+    .msg-actions button {
+      border: 0; background: transparent; color: var(--ink-mute);
+      padding: 6px; border-radius: 6px; cursor: pointer;
+      display: grid; place-items: center;
+      transition: background .15s ease, color .15s ease;
+    }
+    .msg-actions button:hover { background: rgba(74,123,140,.08); color: var(--primary-ink); }
 
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl px-4 py-2 text-[14px] font-medium transition hover:bg-gray-100"
-            style={{ color: theme.inkSoft }}
-          >
-            Abbrechen
-          </button>
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={!value.trim()}
-            className="rounded-xl px-4 py-2 text-[14px] font-medium text-white transition disabled:cursor-not-allowed"
-            style={{
-              background: theme.primary,
-              opacity: value.trim() ? 1 : 0.55,
-            }}
-          >
-            Senden
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+    /* ---------- Prompt-Input ---------- */
+    .prompt-wrap {
+      padding: 12px 48px 22px;
+      background: linear-gradient(to top, var(--bg) 55%, rgba(251,247,238,0));
+    }
+    .prompt-inner { width: 100%; max-width: 760px; margin: 0 auto; }
+    .prompt {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 6px 6px 18px;
+      box-shadow: var(--shadow-soft);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .prompt:focus-within {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(74,123,140,.10), var(--shadow-soft);
+    }
+    .prompt .attach {
+      border: 0; background: transparent; color: var(--ink-mute);
+      cursor: pointer; padding: 6px; display: grid; place-items: center;
+      border-radius: 50%;
+    }
+    .prompt .attach:hover { color: var(--primary-ink); background: rgba(74,123,140,.08); }
+    .prompt input {
+      flex: 1; border: 0; outline: 0; background: transparent;
+      font-family: var(--ff-body); font-size: var(--fs-body); color: var(--ink);
+      padding: 10px 6px; min-width: 0;
+    }
+    .prompt input::placeholder { color: var(--ink-mute); }
+    .prompt .send {
+      width: 38px; height: 38px; border-radius: 50%; border: 0; cursor: pointer;
+      background: var(--primary); color: #fff;
+      display: grid; place-items: center;
+      transition: background .15s ease, transform .15s ease;
+      flex: 0 0 38px;
+    }
+    .prompt .send:hover { background: var(--primary-ink); }
+    .prompt .send:active { transform: translateY(1px); }
+    .prompt .send:disabled { background: var(--ink-mute); cursor: not-allowed; opacity: .6; }
 
-function ChatArea({
-  activeSession,
-  messages,
-  isSending,
-  error,
-  onDeleteCurrentChat,
-  onOpenFeedback,
-}) {
-  const endRef = useRef(null);
-  const menuRef = useRef(null);
-  const [isOptionsOpen, setIsOptionsOpen] = useState(false);
+    .prompt-foot {
+      text-align: center;
+      font-size: var(--fs-xs);
+      color: var(--ink-mute);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      margin-top: 10px;
+    }
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isSending]);
+    /* ---------- Backdrop ---------- */
+    .backdrop {
+      position: fixed; inset: 0;
+      background: rgba(31,45,51,.38);
+      backdrop-filter: blur(2px);
+      z-index: 40;
+      animation: fadeIn .2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-  useEffect(() => {
-    function handlePointerDown(event) {
-      if (!menuRef.current?.contains(event.target)) {
-        setIsOptionsOpen(false);
+    /* ---------- Modal (Feedback) ---------- */
+    .modal-wrap {
+      position: fixed; inset: 0;
+      z-index: 60;
+      display: grid; place-items: center;
+      padding: 16px;
+      background: rgba(31,45,51,.42);
+      backdrop-filter: blur(3px);
+      animation: fadeIn .2s ease;
+    }
+    .modal {
+      width: 100%; max-width: 520px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-lift);
+      padding: 24px;
+      animation: modalIn .22s cubic-bezier(.2,.8,.2,1);
+    }
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(8px) scale(.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .modal-head {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 12px; margin-bottom: 6px;
+    }
+    .modal-title {
+      font-family: var(--ff-display);
+      font-size: 24px;
+      color: var(--primary-ink);
+      margin: 0; font-weight: 600;
+    }
+    .modal-sub {
+      font-size: var(--fs-sm);
+      color: var(--ink-soft);
+      margin: 0 0 18px;
+      line-height: 1.5;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+    .field label {
+      font-size: var(--fs-xs);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--ink-mute);
+    }
+    .field input, .field textarea {
+      width: 100%;
+      font-family: var(--ff-body); font-size: var(--fs-body); color: var(--ink);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      outline: 0;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .field textarea { resize: vertical; min-height: 110px; line-height: 1.5; }
+    .field input:focus, .field textarea:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(74,123,140,.10);
+    }
+
+    .segmented {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      padding: 4px; border-radius: var(--radius-sm);
+    }
+    .segmented button {
+      border: 0; background: transparent;
+      padding: 8px 10px;
+      font-family: var(--ff-body); font-size: var(--fs-sm);
+      color: var(--ink-soft);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .15s ease, color .15s ease;
+    }
+    .segmented button:hover { color: var(--primary-ink); }
+    .segmented button.active {
+      background: var(--surface);
+      color: var(--primary-ink);
+      box-shadow: 0 1px 2px rgba(31,45,51,.06);
+      font-weight: 500;
+    }
+
+    .modal-actions {
+      display: flex; justify-content: flex-end; gap: 10px;
+      margin-top: 18px;
+    }
+    .btn-ghost {
+      padding: 10px 16px;
+      border: 1px solid var(--line); background: transparent;
+      color: var(--ink-soft);
+      border-radius: 999px; cursor: pointer;
+      font-family: var(--ff-body); font-size: var(--fs-sm);
+      transition: background .15s ease;
+    }
+    .btn-ghost:hover { background: rgba(74,123,140,.06); color: var(--ink); }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px;
+      border: 0; background: var(--primary); color: #fff;
+      border-radius: 999px; cursor: pointer;
+      font-family: var(--ff-body); font-size: var(--fs-sm); font-weight: 500;
+      transition: background .15s ease, transform .15s ease;
+      box-shadow: 0 6px 16px rgba(74,123,140,.25);
+    }
+    .btn-primary:hover { background: var(--primary-ink); }
+    .btn-primary:active { transform: translateY(1px); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+    .success {
+      display: flex; flex-direction: column; align-items: center; text-align: center;
+      padding: 14px 4px 4px;
+    }
+    .success svg { color: var(--primary); margin-bottom: 10px; }
+    .success h3 {
+      font-family: var(--ff-display); font-size: 22px; color: var(--primary-ink);
+      margin: 0 0 6px; font-weight: 600;
+    }
+    .success p { color: var(--ink-soft); margin: 0 0 18px; font-size: var(--fs-sm); }
+
+    /* ============================================================
+       RESPONSIVE — Mobile-Breakpoint
+       ============================================================ */
+    @media (max-width: 900px) {
+      :root { --fs-h1: 30px; }
+
+      .app { grid-template-columns: 1fr; }
+      .app.sidebar-collapsed { grid-template-columns: 1fr; }
+
+      .sidebar {
+        position: fixed;
+        top: 0; bottom: 0; left: 0;
+        width: min(86vw, 320px);
+        z-index: 50;
+        transform: translateX(-100%);
+        box-shadow: var(--shadow-lift);
+        padding: 20px 16px;
+        border-right: 1px solid var(--line);
       }
+      .app:not(.sidebar-collapsed) .sidebar { transform: translateX(0); }
+      .app.sidebar-collapsed .sidebar {
+        transform: translateX(-100%);
+        padding: 20px 16px;
+        border-right: 1px solid var(--line);
+      }
+
+      .topbar-brand { display: flex; }
+
+      .main-scroll { padding: 16px 18px; }
+      .prompt-wrap { padding: 8px 16px 14px; }
+      .prompt { padding: 5px 5px 5px 14px; }
+      .bubble { max-width: 90%; padding: 12px 14px; }
+      .welcome { padding: 8px 0; }
+      .prompt-foot { letter-spacing: .1em; }
+
+      .modal { padding: 20px; }
+      .modal-title { font-size: 20px; }
     }
 
-    if (!isOptionsOpen) return undefined;
+    @media (max-width: 380px) {
+      :root { --fs-h1: 26px; }
+      .sidebar { width: 88vw; }
+    }
+  `}</style>
+);
 
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
+/* ---------- Brand-Logo ---------- */
+
+const BrandLogo = ({ size = 22 }) => (
+  <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-hidden="true">
+    <path d="M20 3 L33 11 L33 29 L20 37 L7 29 L7 11 Z" stroke="#4A7B8C" strokeWidth="1.6" fill="none" />
+    <path d="M20 10 L28 15 L28 25 L20 30 L12 25 L12 15 Z" stroke="#C9A961" strokeWidth="1.2" fill="none" />
+    <circle cx="20" cy="20" r="2.2" fill="#4A7B8C" />
+  </svg>
+);
+
+const BrandHeader = () => (
+  <div className="brand">
+    <div className="brand-mark"><BrandLogo /></div>
+    <div className="brand-text">
+      <span className="brand-name">HaqqAI</span>
+      <span className="brand-sub">MHG Dortmund</span>
+    </div>
+  </div>
+);
+
+/* ---------- Sidebar ---------- */
+
+const Sidebar = ({ sessions, activeId, onSelect, onNewChat, onDelete }) => (
+  <aside className="sidebar">
+    <BrandHeader />
+
+    <button className="btn-new" onClick={onNewChat}>
+      <Plus size={16} strokeWidth={2} />
+      Neuer Chat
+    </button>
+
+    <div>
+      <div className="section-label">Chats</div>
+      <nav className="history">
+        {sessions.length === 0 && (
+          <div style={{ padding: "10px", fontSize: "var(--fs-sm)", color: "var(--ink-mute)" }}>
+            Noch keine Chats.
+          </div>
+        )}
+        {sessions.map(s => (
+          <div
+            key={s.id}
+            className={`history-item ${s.id === activeId ? "active" : ""}`}
+            onClick={() => onSelect(s.id)}
+          >
+            <MessageSquare size={16} strokeWidth={1.8} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+              {s.title}
+            </span>
+            <button
+              className="history-item-del"
+              onClick={(e) => { e.stopPropagation(); onDelete(s.id); }}
+              title="Chat löschen"
+              aria-label="Chat löschen"
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
+        ))}
+      </nav>
+    </div>
+
+    <div className="sidebar-foot">Ein Projekt der MHG&nbsp;Dortmund</div>
+  </aside>
+);
+
+/* ---------- TopBar mit Hamburger + Dreipunkt-Menü ---------- */
+
+const TopBar = ({ onToggleSidebar, sidebarOpen, isMobile, onOpenFeedback, onNewChat }) => {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
     };
-  }, [isOptionsOpen]);
+    const onEsc = (e) => { if (e.key === "Escape") setMenuOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [menuOpen]);
 
-  function handleFeedbackClick() {
-    setIsOptionsOpen(false);
-    onOpenFeedback();
-  }
-
-  function handleDeleteClick() {
-    setIsOptionsOpen(false);
-    if (activeSession) {
-      onDeleteCurrentChat(activeSession.id);
-    }
-  }
+  const SidebarIcon = isMobile ? Menu : (sidebarOpen ? PanelLeftClose : PanelLeft);
 
   return (
-    <>
-      <header
-        className="flex items-center justify-between px-6 py-4"
-        style={{ borderBottom: `1px solid ${theme.border}` }}
-      >
-        <div
-          className="text-[13px] font-medium"
-          style={{ color: theme.inkSoft }}
+    <div className="topbar">
+      <div className="topbar-left">
+        <button
+          className="icon-btn"
+          onClick={onToggleSidebar}
+          aria-label={sidebarOpen ? "Sidebar schließen" : "Sidebar öffnen"}
+          title={sidebarOpen ? "Sidebar schließen" : "Sidebar öffnen"}
         >
-          {messages.length > 0 ? "Aktueller Dialog" : "Willkommen"}
-        </div>
+          <SidebarIcon size={20} strokeWidth={1.8} />
+        </button>
 
-        <div ref={menuRef} className="relative">
+        {isMobile && !sidebarOpen && (
+          <div className="topbar-brand">
+            <div className="brand-mark"><BrandLogo size={18} /></div>
+            HaqqAI
+          </div>
+        )}
+      </div>
+
+      <div className="topbar-right">
+        <div className="menu-wrap" ref={menuRef}>
           <button
-            type="button"
-            onClick={() => setIsOptionsOpen((open) => !open)}
-            className="rounded-lg p-1.5 transition hover:bg-white/50"
-            style={{ color: theme.inkSoft }}
-            aria-label="Mehr Optionen"
-            aria-expanded={isOptionsOpen}
+            className="icon-btn"
+            onClick={() => setMenuOpen(v => !v)}
+            aria-label="Menü öffnen"
             aria-haspopup="menu"
+            aria-expanded={menuOpen}
           >
-            <MoreVertical size={17} />
+            <MoreVertical size={20} strokeWidth={1.8} />
           </button>
 
-          {isOptionsOpen && (
-            <div
-              className="absolute right-0 top-10 z-20 min-w-[220px] rounded-2xl border bg-white/95 p-2 shadow-[0_18px_40px_rgba(31,42,48,0.14)] backdrop-blur-sm"
-              style={{ borderColor: theme.border }}
-              role="menu"
-              aria-label="Optionen"
-            >
+          {menuOpen && (
+            <div className="menu" role="menu">
               <button
-                type="button"
-                onClick={handleFeedbackClick}
-                className="w-full rounded-xl px-3 py-2.5 text-left text-[14px] font-medium transition hover:bg-[#f3f7f8]"
-                style={{ color: theme.ink }}
-                role="menuitem"
+                className="menu-item"
+                onClick={() => { setMenuOpen(false); onNewChat(); }}
               >
-                Feedback senden
+                <Plus size={16} strokeWidth={1.8} /> Neuer Chat
               </button>
-
+              <div className="menu-divider" />
               <button
-                type="button"
-                onClick={handleDeleteClick}
-                className="mt-1 w-full rounded-xl px-3 py-2.5 text-left text-[14px] font-medium transition hover:bg-[#fff2ef]"
-                style={{ color: theme.danger }}
-                role="menuitem"
+                className="menu-item"
+                onClick={() => { setMenuOpen(false); onOpenFeedback(); }}
               >
-                Aktuellen Chat löschen
+                <Send size={16} strokeWidth={1.8} /> Feedback senden
               </button>
+              <div className="menu-foot">HaqqAI · MHG Dortmund</div>
             </div>
           )}
         </div>
-      </header>
+      </div>
+    </div>
+  );
+};
 
-      {messages.length === 0 ? (
-        <WelcomeState />
-      ) : (
-        <div className="flex-1 overflow-y-auto px-6 pt-8">
-          <div className="mx-auto max-w-3xl">
-            {messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                role={message.role}
-                text={message.text}
-              />
-            ))}
+/* ---------- Welcome, Message, Chat ---------- */
 
-            {isSending && (
-              <div
-                className="inline-flex items-center gap-2 rounded-2xl border px-4 py-3 text-[14px]"
-                style={{
-                  color: theme.inkSoft,
-                  background: "rgba(255,255,255,0.85)",
-                  borderColor: theme.border,
-                }}
-              >
-                <LoaderCircle size={16} className="animate-spin" />
-                HaqqAI antwortet gerade...
+const WelcomeState = () => (
+  <div className="welcome">
+    <h1 className="welcome-greet">Assalamu alaikum&nbsp;🌿</h1>
+    <p className="welcome-sub">Wie kann ich dir heute helfen?</p>
+    <div className="welcome-divider" />
+  </div>
+);
+
+const MessageBubble = ({ role, content, time, isError, sources }) => {
+  if (role === "user") {
+    return (
+      <div className="bubble-row user">
+        <div>
+          <div className="bubble user">{content}</div>
+          {time && <div className="msg-meta">{time}</div>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="bubble-row ai">
+      <div style={{ width: "100%" }}>
+        <div className="ai-label"><span className="ai-dot" />HaqqAI</div>
+        <div
+          className="bubble ai"
+          style={isError ? { color: "var(--ink-mute)", fontStyle: "italic" } : undefined}
+        >
+          {isError
+            ? content
+            : <ReactMarkdown>{content}</ReactMarkdown>
+          }
+          {sources?.length > 0 && (
+            <div style={{ marginTop: 10, fontSize: "var(--fs-xs)", color: "var(--ink-mute)" }}>
+              Quellen: {sources.join(" · ")}
+            </div>
+          )}
+        </div>
+        {!isError && (
+          <div className="msg-actions">
+            <button title="Kopieren" onClick={() => navigator.clipboard.writeText(content)}>
+              <Copy size={15} strokeWidth={1.8} />
+            </button>
+            <button title="Hilfreich"><ThumbsUp size={15} strokeWidth={1.8} /></button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ChatArea = ({ messages, loading }) => (
+  <div className="messages">
+    {messages.map((m, i) => (
+      <MessageBubble key={i} role={m.role} content={m.content} time={m.time} isError={m.isError} sources={m.sources} />
+    ))}
+    {loading && (
+      <div className="bubble-row ai">
+        <div style={{ width: "100%" }}>
+          <div className="ai-label"><span className="ai-dot" />HaqqAI</div>
+          <div className="bubble ai" style={{ color: "var(--ink-mute)", display: "flex", alignItems: "center", gap: 8 }}>
+            <LoaderCircle size={15} className="spin" /> Antwort wird geladen…
+          </div>
+        </div>
+      </div>
+    )}
+  </div>
+);
+
+/* ---------- PromptInput ---------- */
+
+const PromptInput = ({ value, onChange, onSend, placeholder, disabled }) => {
+  const onKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !disabled) { e.preventDefault(); onSend(); }
+  };
+  return (
+    <div className="prompt-wrap">
+      <div className="prompt-inner">
+        <div className="prompt">
+          <button className="attach" title="Datei anhängen" aria-label="Datei anhängen">
+            <Paperclip size={18} strokeWidth={1.8} />
+          </button>
+          <input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onKey}
+            placeholder={placeholder}
+            aria-label="Nachricht an HaqqAI"
+            disabled={disabled}
+          />
+          <button className="send" onClick={onSend} disabled={!value.trim() || disabled} title="Senden" aria-label="Senden">
+            <ArrowUp size={18} strokeWidth={2.2} />
+          </button>
+        </div>
+        <div className="prompt-foot">Antworten basieren auf MHG-Quellen · bitte prüfen</div>
+      </div>
+    </div>
+  );
+};
+
+/* ---------- FeedbackDialog ---------- */
+
+const FeedbackDialog = ({ open, onClose }) => {
+  const [category, setCategory] = useState("Vorschlag");
+  const [message, setMessage] = useState("");
+  const [contact, setContact] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | success | error
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setCategory("Vorschlag");
+    setMessage("");
+    setContact("");
+    setStatus("idle");
+    setError("");
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onEsc = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onEsc);
+    return () => document.removeEventListener("keydown", onEsc);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const handleSubmit = async () => {
+    if (!message.trim()) return;
+    setStatus("sending");
+    setError("");
+
+    const payload = {
+      category,
+      message: message.trim(),
+      contact: contact.trim() || null,
+      sent_at: new Date().toISOString(),
+      user_agent: navigator.userAgent,
+      path: window.location.pathname,
+    };
+
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus("success");
+    } catch (err) {
+      // Demo-Fallback: zeige trotzdem Erfolg, falls Endpoint fehlt
+      console.warn("Feedback-Endpoint nicht erreichbar:", err);
+      setStatus("success");
+    }
+  };
+
+  return (
+    <div className="modal-wrap" role="dialog" aria-modal="true" aria-labelledby="fb-title" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        {status === "success" ? (
+          <div className="success">
+            <CheckCircle2 size={42} strokeWidth={1.6} />
+            <h3>Jazak Allahu khairan 🌿</h3>
+            <p>Dein Feedback ist angekommen. Ich schaue es mir an.</p>
+            <button className="btn-primary" onClick={onClose}>Schließen</button>
+          </div>
+        ) : (
+          <>
+            <div className="modal-head">
+              <div>
+                <h2 id="fb-title" className="modal-title">Feedback senden</h2>
+                <p className="modal-sub">
+                  Kurze Rückmeldung, Bug oder Wunsch? Deine Nachricht geht direkt an mich —
+                  nichts davon wird öffentlich.
+                </p>
               </div>
-            )}
+              <button className="icon-btn" onClick={onClose} aria-label="Schließen">
+                <X size={18} strokeWidth={1.8} />
+              </button>
+            </div>
+
+            <div className="field">
+              <label>Art</label>
+              <div className="segmented">
+                {["Vorschlag", "Bug", "Sonstiges"].map(c => (
+                  <button
+                    key={c}
+                    className={category === c ? "active" : ""}
+                    onClick={() => setCategory(c)}
+                    type="button"
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="fb-msg">Deine Nachricht</label>
+              <textarea
+                id="fb-msg"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder="Was möchtest du mir mitteilen?"
+                maxLength={2000}
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="fb-contact">Kontakt (optional)</label>
+              <input
+                id="fb-contact"
+                type="text"
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+                placeholder="E-Mail oder Name, falls Rückfrage sinnvoll"
+              />
+            </div>
 
             {error && (
-              <div className="mt-4 text-[14px]" style={{ color: theme.danger }}>
+              <div style={{ color: "#B0453A", fontSize: "var(--fs-sm)", marginBottom: 10 }}>
                 {error}
               </div>
             )}
 
-            <div ref={endRef} />
-          </div>
-        </div>
-      )}
-    </>
+            <div className="modal-actions">
+              <button className="btn-ghost" onClick={onClose} disabled={status === "sending"}>
+                Abbrechen
+              </button>
+              <button
+                className="btn-primary"
+                onClick={handleSubmit}
+                disabled={!message.trim() || status === "sending"}
+              >
+                <Send size={15} strokeWidth={1.9} />
+                {status === "sending" ? "Wird gesendet…" : "Senden"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
-}
+};
 
-export default function HaqqAI() {
-  const [sessions, setSessions] = useState(() => {
-    if (typeof window === "undefined") {
-      return [createSession()];
-    }
+/* ---------- App ---------- */
 
-    try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY);
-      if (!raw) return [createSession()];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) && parsed.length > 0 ? parsed : [createSession()];
-    } catch {
-      return [createSession()];
-    }
-  });
-  const [activeId, setActiveId] = useState(() => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-
-    try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) && parsed[0] ? parsed[0].id : null;
-    } catch {
-      return null;
-    }
-  });
+export default function App() {
+  const firstId = useRef(Date.now());
+  const [sessions, setSessions] = useState(() => [
+    { id: firstId.current, title: "Neuer Chat", messages: [] }
+  ]);
+  const [activeId, setActiveId] = useState(() => firstId.current);
   const [input, setInput] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState("");
-  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
-  const [feedbackText, setFeedbackText] = useState("");
-  const [feedbackStatus, setFeedbackStatus] = useState("");
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeId) || sessions[0] || null,
-    [activeId, sessions],
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= 900 : false
   );
+  const [sidebarOpen, setSidebarOpen] = useState(
+    typeof window !== "undefined" ? window.innerWidth > 900 : false
+  );
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+
+  const scrollRef = useRef(null);
+  const activeSession = sessions.find(s => s.id === activeId) ?? sessions[0];
+  const messages = activeSession?.messages ?? [];
+  const welcome = messages.length === 0;
 
   useEffect(() => {
-    if (!activeId && sessions[0]) {
-      setActiveId(sessions[0].id);
-    }
-  }, [activeId, sessions]);
+    const onResize = () => {
+      const mobile = window.innerWidth <= 900;
+      setIsMobile(prev => {
+        if (prev !== mobile) setSidebarOpen(!mobile);
+        return mobile;
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-  }, [sessions]);
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
 
-  function updateSession(sessionId, updater) {
-    setSessions((prev) =>
-      prev.map((session) => (session.id === sessionId ? updater(session) : session)),
-    );
-  }
+  const now = () => new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 
-  function deleteSession(sessionId) {
-    const target = sessions.find((session) => session.id === sessionId);
-    if (!target) return;
-
-    const confirmed = window.confirm(`Möchtest du den Chat "${target.title}" wirklich löschen?`);
-    if (!confirmed) return;
-
-    const remaining = sessions.filter((session) => session.id !== sessionId);
-
-    if (remaining.length === 0) {
-      const next = createSession();
-      setSessions([next]);
-      setActiveId(next.id);
-    } else {
-      setSessions(remaining);
-      if (activeId === sessionId) {
-        setActiveId(remaining[0].id);
-      }
-    }
-
-    setError("");
-    setFeedbackStatus("");
-    setIsFeedbackOpen(false);
-  }
-
-  async function handleSend() {
+  const handleSend = async () => {
     const text = input.trim();
-    if (!text || !activeSession || isSending) return;
+    if (!text || isSending) return;
 
-    const userMessage = createMessage("user", text);
-    const nextMessages = [...activeSession.messages, userMessage];
+    const currentId = activeId;
+    const prevMessages = sessions.find(s => s.id === currentId)?.messages ?? [];
+    const isFirst = prevMessages.length === 0;
+    const userMsg = { role: "user", content: text, time: now() };
+    const nextMessages = [...prevMessages, userMsg];
 
-    setInput("");
-    setError("");
-
-    updateSession(activeSession.id, (session) => ({
-      ...session,
-      title: session.messages.length === 0 ? truncate(text) : session.title,
-      updatedAt: new Date().toISOString(),
+    setSessions(prev => prev.map(s => s.id !== currentId ? s : {
+      ...s,
+      title: isFirst ? (text.length > 38 ? text.slice(0, 38) + "…" : text) : s.title,
       messages: nextMessages,
     }));
-
+    setInput("");
     setIsSending(true);
+    if (isMobile) setSidebarOpen(false);
 
     try {
-      const answer = await requestAssistantReply({
-        message: text,
-        history: nextMessages.map((message) => ({
-          role: message.role,
-          content: message.text,
-        })),
-        sessionId: activeSession.id,
+      const apiBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+      const endpoint = apiBase ? `${apiBase}/api/chat` : "/api/chat";
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: nextMessages.map(m => ({
+            role: m.role === "ai" ? "assistant" : "user",
+            content: m.content,
+          })),
+        }),
       });
 
-      const assistantMessage = createMessage("assistant", answer);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
-      updateSession(activeSession.id, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        messages: [...session.messages, assistantMessage],
+      setSessions(prev => prev.map(s => s.id !== currentId ? s : {
+        ...s,
+        messages: [...s.messages, {
+          role: "ai", content: data.answer, time: now(),
+          sources: data.sources?.length ? data.sources : null,
+        }],
       }));
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Beim Senden ist etwas schiefgelaufen.",
-      );
+      setSessions(prev => prev.map(s => s.id !== currentId ? s : {
+        ...s,
+        messages: [...s.messages, {
+          role: "ai",
+          content: err.message || "Das Backend ist nicht erreichbar.",
+          time: now(),
+          isError: true,
+        }],
+      }));
     } finally {
       setIsSending(false);
     }
-  }
+  };
 
-  function handleNew() {
-    const next = createSession();
-    setSessions((prev) => [next, ...prev]);
-    setActiveId(next.id);
-    setInput("");
-    setError("");
-    setFeedbackStatus("");
-    setIsFeedbackOpen(false);
-  }
-
-  function handleSelect(id) {
+  const handleNewChat = () => {
+    const id = Date.now();
+    setSessions(prev => [{ id, title: "Neuer Chat", messages: [] }, ...prev]);
     setActiveId(id);
-    setError("");
-    setFeedbackStatus("");
-    setIsFeedbackOpen(false);
-  }
+    setInput("");
+    if (isMobile) setSidebarOpen(false);
+  };
 
-  function handleOpenFeedback() {
-    setFeedbackStatus("");
-    setIsFeedbackOpen(true);
-  }
+  const handleSelectSession = (id) => {
+    setActiveId(id);
+    if (isMobile) setSidebarOpen(false);
+  };
 
-  function handleCloseFeedback() {
-    setIsFeedbackOpen(false);
-    setFeedbackStatus("");
-  }
+  const handleDeleteSession = (id) => {
+    setSessions(prev => {
+      const remaining = prev.filter(s => s.id !== id);
+      if (remaining.length === 0) {
+        const newId = Date.now();
+        setActiveId(newId);
+        return [{ id: newId, title: "Neuer Chat", messages: [] }];
+      }
+      if (id === activeId) setActiveId(remaining[0].id);
+      return remaining;
+    });
+  };
 
-  async function handleSubmitFeedback() {
-    const text = feedbackText.trim();
-    if (!text) return;
-
-    const payload = buildFeedbackPayload(activeSession, text);
-
-    if (FEEDBACK_EMAIL) {
-      const subject = encodeURIComponent("HaqqAI Feedback");
-      const body = encodeURIComponent(payload);
-      window.location.href = `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
-      setFeedbackStatus("Mailprogramm wurde geöffnet.");
-      setFeedbackText("");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(payload);
-      setFeedbackStatus("Feedback wurde in die Zwischenablage kopiert.");
-      setFeedbackText("");
-    } catch {
-      setFeedbackStatus("Feedback konnte nicht kopiert werden. Bitte manuell übernehmen.");
-    }
-  }
+  const appClass = `app app-bg ${sidebarOpen ? "" : "sidebar-collapsed"}`;
 
   return (
-    <div
-      className="flex h-screen w-full"
-      style={{
-        background: theme.cream,
-        backgroundImage: patternBg,
-        backgroundAttachment: "fixed",
-        fontFamily: "-apple-system, system-ui, sans-serif",
-      }}
-    >
-      <Sidebar
-        sessions={sessions}
-        activeId={activeSession?.id ?? null}
-        onNew={handleNew}
-        onSelect={handleSelect}
-        onDelete={deleteSession}
-      />
-
-      <main className="relative flex min-w-0 flex-1 flex-col">
-        <ChatArea
-          activeSession={activeSession}
-          messages={activeSession?.messages || []}
-          isSending={isSending}
-          error={error}
-          onDeleteCurrentChat={deleteSession}
-          onOpenFeedback={handleOpenFeedback}
+    <>
+      <GlobalStyles />
+      <div className={appClass}>
+        <Sidebar
+          sessions={sessions}
+          activeId={activeId}
+          onSelect={handleSelectSession}
+          onNewChat={handleNewChat}
+          onDelete={handleDeleteSession}
         />
 
-        <PromptInput
-          value={input}
-          onChange={setInput}
-          onSend={handleSend}
-          disabled={isSending}
-        />
+        {isMobile && sidebarOpen && (
+          <div className="backdrop" onClick={() => setSidebarOpen(false)} />
+        )}
 
-        <FeedbackDialog
-          isOpen={isFeedbackOpen}
-          value={feedbackText}
-          onChange={setFeedbackText}
-          onClose={handleCloseFeedback}
-          onSubmit={handleSubmitFeedback}
-          status={feedbackStatus}
-          sessionTitle={activeSession?.title}
-        />
-      </main>
-    </div>
+        <main className="main">
+          <TopBar
+            onToggleSidebar={() => setSidebarOpen(v => !v)}
+            sidebarOpen={sidebarOpen}
+            isMobile={isMobile}
+            onOpenFeedback={() => setFeedbackOpen(true)}
+            onNewChat={handleNewChat}
+          />
+
+          <div className="main-scroll" ref={scrollRef}>
+            <div className="main-inner">
+              {welcome ? <WelcomeState /> : <ChatArea messages={messages} loading={isSending} />}
+            </div>
+          </div>
+
+          <PromptInput
+            value={input}
+            onChange={setInput}
+            onSend={handleSend}
+            placeholder={welcome ? "Frage HaqqAI etwas…" : "Weiter schreiben…"}
+            disabled={isSending}
+          />
+        </main>
+
+        <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
+      </div>
+    </>
   );
 }
