@@ -871,27 +871,37 @@ const FeedbackDialog = ({ open, onClose }) => {
     setStatus("sending");
     setError("");
 
-    const payload = {
-      category,
-      message: message.trim(),
-      contact: contact.trim() || null,
-      sent_at: new Date().toISOString(),
-      user_agent: navigator.userAgent,
-      path: window.location.pathname,
-    };
+    // NEU: VITE_API_BASE_URL respektieren (wie handleSend es auch tut)
+    const apiBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+    const endpoint = apiBase ? `${apiBase}/api/feedback` : "/api/feedback";
 
     try {
-      const res = await fetch("/api/feedback", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          category,
+          message: message.trim(),
+          contact: contact.trim() || null,
+          sent_at: new Date().toLocaleString("de-DE"),
+          // ENTFERNT: user_agent und path (braucht das Backend nicht)
+        }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
       setStatus("success");
     } catch (err) {
-      // Demo-Fallback: zeige trotzdem Erfolg, falls Endpoint fehlt
-      console.warn("Feedback-Endpoint nicht erreichbar:", err);
-      setStatus("success");
+      // NEU: echter Fehler-State statt Demo-Fallback
+      setStatus("error");
+      setError(
+        err.message && !err.message.startsWith("HTTP")
+          ? err.message
+          : "Senden fehlgeschlagen – bitte später nochmal versuchen."
+      );
     }
   };
 
